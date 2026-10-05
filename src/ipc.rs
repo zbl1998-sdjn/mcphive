@@ -140,17 +140,16 @@ mod platform {
 
     use super::{Conn, Endpoint, io, user_name};
 
+    /// Where the sockets and lock files are. A socket path may have at most 103
+    /// bytes on macOS, so there is one folder level and no more.
     fn directory() -> PathBuf {
-        let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
-            || std::env::temp_dir().join(format!("mcphive-{}", user_name())),
-            PathBuf::from,
-        );
-        // XDG_RUNTIME_DIR is the same for every namespace, so a namespace has to
-        // be told apart by the name of the folder as well.
-        if std::env::var_os("MCPHIVE_NAMESPACE").is_some() {
-            base.join(format!("mcphive-{}", user_name()))
-        } else {
-            base.join("mcphive")
+        match std::env::var_os("XDG_RUNTIME_DIR") {
+            // The same for every namespace: the name of the folder tells them apart.
+            Some(base) if std::env::var_os("MCPHIVE_NAMESPACE").is_some() => {
+                PathBuf::from(base).join(format!("mcphive-{}", user_name()))
+            }
+            Some(base) => PathBuf::from(base).join("mcphive"),
+            None => std::env::temp_dir().join(format!("mcphive-{}", user_name())),
         }
     }
 

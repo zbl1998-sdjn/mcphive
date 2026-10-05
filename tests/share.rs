@@ -16,7 +16,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_mcphive");
 const WAIT: Duration = Duration::from_secs(15);
 
 fn namespace(test: &str) -> String {
-    format!("test_{test}_{}", std::process::id())
+    format!("t{}_{test}", std::process::id())
 }
 
 fn workdir(test: &str) -> PathBuf {
