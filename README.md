@@ -17,7 +17,7 @@ key                 daemon process clients up (s)  procs      MB  server
 1 shared server for 3 clients. Without mcphive each client would have started its own copy: about 10 more processes and 576 MB more (an estimate from the size of each shared server).
 ```
 
-**Status: version 0.1.** It works against the official MCP TypeScript client and
+**Status: version 0.2.** It works against the official MCP TypeScript client and
 the reference server (see [How it is tested](#how-it-is-tested)), and it has had
 little use. Read [What to share](#what-to-share) before you put every server
 behind it.
