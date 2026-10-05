@@ -1,0 +1,37 @@
+[package]
+name = "mcphive"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Run each MCP server once and share it between all your AI agents."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/zbl1998-sdjn/mcphive"
+keywords = ["mcp", "ai-agents", "claude-code", "proxy", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
+authors = ["mcphive contributors"]
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[dependencies]
+clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "io-util", "io-std", "net", "process", "sync", "time", "signal"] }
+which = "8.0.6"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2.190"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
