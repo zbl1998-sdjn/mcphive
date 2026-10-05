@@ -11,8 +11,10 @@ for a while. One small Rust binary, Windows, macOS and Linux.
 
 ```sh
 $ mcphive status
-key                 daemon process clients up (s)  server
-46f41ba8c2de11da     49828   24636       3     12  npx (+2 arguments)
+key                 daemon process clients up (s)  procs      MB  server
+96903e17d4fe4161      1768  112592       3      3      5     288  npx (+2 arguments)
+
+1 shared server for 3 clients. Without mcphive each client would have started its own copy: about 10 more processes and 576 MB more (an estimate from the size of each shared server).
 ```
 
 **Status: version 0.1.** It works against the official MCP TypeScript client and
@@ -33,7 +35,28 @@ cargo binstall mcphive      # the same binary, without building it
 
 ## Use
 
-Put `mcphive run --` in front of the command of a server.
+`mcphive wrap` does the editing for you. It shows what it would change, and
+changes nothing until you add `--apply`:
+
+```sh
+mcphive wrap              # a preview, for the settings of every client it finds
+mcphive wrap --apply      # change them; each file is copied first
+mcphive unwrap --apply    # put the servers back as they were
+```
+
+It knows the settings of Claude Code (`~/.claude.json` and `.mcp.json`), Claude
+Desktop (Windows and macOS), Cursor (`~/.cursor/mcp.json` and `.cursor/mcp.json`)
+and Codex (`~/.codex/config.toml`); `--client` picks one and `--file` names a
+file. It wraps the servers that run as a program, adds `--key-env` for every
+variable in the `env` of a server, and leaves remote servers alone. It also
+leaves alone the servers that look as if they keep something for each client (a
+browser, a shell; `--include-stateful` wraps them anyway). The preview shows the
+program of each server, never its arguments or its environment. Close the
+clients before you apply: some of them write their settings back when they
+close. A JSON file is written again with two-space indentation and its keys in
+the same order; a TOML file keeps its comments.
+
+To do it by hand, put `mcphive run --` in front of the command of a server.
 
 Claude Code (`.mcp.json`, or `claude mcp add`; see the
 [MCP documentation](https://code.claude.com/docs/en/mcp)):
@@ -72,7 +95,8 @@ servers different (an API key, say), name it: `mcphive run --key-env GITHUB_TOKE
 | Command | |
 |---|---|
 | `mcphive run [--idle SECONDS] [--key-env NAME]... -- COMMAND [ARGS]...` | what goes in the settings of a client; the server stays up 120 seconds after the last client by default |
-| `mcphive status` | the shared servers that are running, and how many clients each has |
+| `mcphive wrap [--apply]`, `mcphive unwrap [--apply]` | put `mcphive run --` in front of the servers in the settings of your clients, or take it out; a preview without `--apply` |
+| `mcphive status` | the shared servers that are running, how many clients each has, how many processes and how much memory (the working set on Windows, the resident size elsewhere, shared pages counted for each process), and what the clients beyond the first would have cost |
 | `mcphive stop --all` or `mcphive stop KEY...` | stop them now |
 | `mcphive demo-server` | a small MCP server to try this with: `echo`, `pid` (the same number for every client when shared) and `slow` (progress) |
 
@@ -100,6 +124,25 @@ separate browsers.
   refused (the current protocol has no batches).
 - The server runs as you and is reachable by you only (a named pipe or a Unix
   socket in a folder that is yours).
+
+## Tried with
+
+Two clients at once, directly and through `mcphive`, on Windows 10 with Node 24
+(2026-10-06). The tools that both clients saw were the same as without
+`mcphive`, and so were the results of a call.
+
+| Server | Result |
+|---|---|
+| `@modelcontextprotocol/server-memory` | the same 9 tools and results; the knowledge graph is one for all clients |
+| `@modelcontextprotocol/server-filesystem` | the same 14 tools and results |
+| `@modelcontextprotocol/server-sequential-thinking` | the same tool and result; the history of thoughts is one for all clients |
+| `@upstash/context7-mcp` | the same 2 tools; no call was made |
+| `@modelcontextprotocol/server-everything` | the official TypeScript client against it, in CI on Windows and Linux |
+
+Each of the four `npx` servers ran as 4 processes for the two clients, where two
+direct clients start 8, and nothing was left after the last client went away. Only
+the demo server and `server-everything` have been tried on Linux and macOS, and
+`npx` through `mcphive` only on Windows.
 
 ## How it works
 
@@ -131,6 +174,10 @@ daemon is about to stop is told so and starts a new one instead.
   process for two clients, progress and ids that stay with their client, a client
   that leaves, the idle stop, `stop`, a server that cannot start, and clients that
   arrive while the daemon is stopping.
+- `tests/wrap.rs` runs `wrap` and `unwrap` on settings files in a folder of their
+  own: the preview that changes nothing, the copy that `--apply` makes first,
+  the way back, the comments of a TOML file, and a wrapped entry that is started
+  and answers as a shared server.
 - `tests/oracle` drives the official MCP TypeScript client (SDK 1.32.0) against the
   official reference server (`server-everything` 2026.8.31) once directly and once
   through `mcphive` with two clients at the same time, and compares what they see:

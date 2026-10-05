@@ -207,6 +207,7 @@ pub async fn serve(options: Options) -> io::Result<()> {
     )?;
     let mut server = child::spawn(&options.command, log.try_clone()?)?;
     let server_pid = server.child.id();
+    let probe = server.probe();
     let _ = writeln!(log, "server process {server_pid:?}");
     let mut to_server = server
         .child
@@ -315,7 +316,7 @@ pub async fn serve(options: Options) -> io::Result<()> {
                 }
                 Msg::Event(event) => queue.push_back(event),
                 Msg::Status(reply) => {
-                    let _ = reply.send(json!({
+                    let mut info = json!({
                         "key": options.key,
                         "command": options.command,
                         "daemon_pid": std::process::id(),
@@ -323,7 +324,20 @@ pub async fn serve(options: Options) -> io::Result<()> {
                         "clients": router.clients(),
                         "initialized": router.initialized(),
                         "uptime_secs": started.elapsed().as_secs(),
-                    }));
+                    });
+                    // Counting the processes of the server and what they use asks
+                    // the operating system, so it is done away from the loop.
+                    tokio::spawn(async move {
+                        let usage = tokio::task::spawn_blocking(move || probe.usage())
+                            .await
+                            .ok()
+                            .flatten();
+                        if let Some(usage) = usage {
+                            info["server_processes"] = json!(usage.processes);
+                            info["server_memory_bytes"] = json!(usage.memory_bytes);
+                        }
+                        let _ = reply.send(info);
+                    });
                 }
                 Msg::Stop => {
                     let _ = writeln!(log, "--- asked to stop");

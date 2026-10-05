@@ -184,6 +184,12 @@ fn two_clients_use_one_server_process() {
         2,
         "two servers: {listed}"
     );
+    // The status counts the processes of a shared server and says what the
+    // second client saved.
+    assert!(
+        listed.contains("more processes"),
+        "no saving shown: {listed}"
+    );
     a.leave();
     b.leave();
     direct.leave();

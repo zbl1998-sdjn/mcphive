@@ -6,10 +6,11 @@ mod demo;
 mod ipc;
 mod router;
 mod shim;
+mod wrap;
 
-use std::{io, process::ExitCode, time::Duration};
+use std::{io, path::PathBuf, process::ExitCode, time::Duration};
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -42,6 +43,28 @@ enum Command {
         #[arg(last = true, required = true, value_name = "COMMAND")]
         command: Vec<String>,
     },
+    /// Put `mcphive run --` in front of the servers in the settings of your
+    /// clients. Only a preview is shown unless you add --apply.
+    Wrap {
+        #[command(flatten)]
+        targets: Targets,
+        /// Also wrap servers that look as if they keep something for each client,
+        /// such as a browser or a shell. They are left alone by default.
+        #[arg(long)]
+        include_stateful: bool,
+        /// Seconds a wrapped server stays up with no client.
+        #[arg(long, value_name = "SECONDS")]
+        idle: Option<u64>,
+        /// The program to put in front; this one by default.
+        #[arg(long, value_name = "PROGRAM")]
+        command: Option<String>,
+    },
+    /// Take `mcphive run --` out of the settings again. Only a preview is shown
+    /// unless you add --apply.
+    Unwrap {
+        #[command(flatten)]
+        targets: Targets,
+    },
     /// List the shared servers that are running.
     Status,
     /// Stop shared servers: those with the given keys, or all of them.
@@ -63,6 +86,22 @@ enum Command {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
+}
+
+/// Which settings files `wrap` and `unwrap` work on.
+#[derive(Args)]
+struct Targets {
+    /// A client whose settings to change: claude-code, claude-desktop, cursor or
+    /// codex. Repeat it for more. All of them when it is not given.
+    #[arg(long, value_enum)]
+    client: Vec<wrap::Client>,
+    /// A settings file to change instead: JSON with `mcpServers`, or TOML with
+    /// `mcp_servers` when it ends in .toml. Repeat it for more.
+    #[arg(long, value_name = "FILE")]
+    file: Vec<PathBuf>,
+    /// Write the changes. Each file is copied first.
+    #[arg(long)]
+    apply: bool,
 }
 
 /// Ask a daemon something and read its one-line answer.
@@ -88,9 +127,12 @@ async fn status() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     println!(
-        "{:<18} {:>7} {:>7} {:>7} {:>6}  server",
-        "key", "daemon", "process", "clients", "up (s)"
+        "{:<18} {:>7} {:>7} {:>7} {:>6} {:>6} {:>7}  server",
+        "key", "daemon", "process", "clients", "up (s)", "procs", "MB"
     );
+    // What the clients beyond the first would have started, each its own copy.
+    let (mut shared, mut clients_all) = (0_u64, 0_u64);
+    let (mut saved_processes, mut saved_bytes) = (0_u64, 0_u64);
     for key in keys {
         match ask(&key, "status").await {
             Ok(info) => {
@@ -109,17 +151,38 @@ async fn status() -> ExitCode {
                         );
                         format!("{name} (+{} arguments)", parts.len().saturating_sub(1))
                     });
+                let megabytes = info["server_memory_bytes"]
+                    .as_u64()
+                    .map_or_else(|| "?".to_owned(), |bytes| (bytes >> 20).to_string());
                 println!(
-                    "{:<18} {:>7} {:>7} {:>7} {:>6}  {command}",
+                    "{:<18} {:>7} {:>7} {:>7} {:>6} {:>6} {:>7}  {command}",
                     key,
                     number("daemon_pid"),
                     number("server_pid"),
                     number("clients"),
                     number("uptime_secs"),
+                    number("server_processes"),
+                    megabytes,
                 );
+                let clients = info["clients"].as_u64().unwrap_or(0);
+                shared += 1;
+                clients_all += clients;
+                if let Some(extra) = clients.checked_sub(1) {
+                    saved_processes += extra * info["server_processes"].as_u64().unwrap_or(0);
+                    saved_bytes += extra * info["server_memory_bytes"].as_u64().unwrap_or(0);
+                }
             }
             Err(_) => println!("{key:<18} (not answering)"),
         }
+    }
+    if saved_processes > 0 {
+        let servers = if shared == 1 { "server" } else { "servers" };
+        println!(
+            "\n{shared} shared {servers} for {clients_all} clients. Without mcphive each client \
+             would have started its own copy: about {saved_processes} more processes and \
+             {} MB more (an estimate from the size of each shared server).",
+            saved_bytes >> 20
+        );
     }
     ExitCode::SUCCESS
 }
@@ -167,6 +230,33 @@ async fn main() -> ExitCode {
                 }
             }
         }
+        Command::Wrap {
+            targets,
+            include_stateful,
+            idle,
+            command,
+        } => wrap::run(
+            wrap::Mode::Wrap,
+            wrap::Options {
+                files: targets.file,
+                clients: targets.client,
+                apply: targets.apply,
+                include_stateful,
+                idle,
+                command,
+            },
+        ),
+        Command::Unwrap { targets } => wrap::run(
+            wrap::Mode::Unwrap,
+            wrap::Options {
+                files: targets.file,
+                clients: targets.client,
+                apply: targets.apply,
+                include_stateful: false,
+                idle: None,
+                command: None,
+            },
+        ),
         Command::Status => status().await,
         Command::Stop { all, keys } => stop(all, keys).await,
         Command::DemoServer => match demo::run() {

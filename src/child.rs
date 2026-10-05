@@ -17,7 +17,7 @@ use tokio::process::{Child, Command};
 pub struct Server {
     pub child: Child,
     #[cfg(windows)]
-    _job: Job,
+    job: Job,
     #[cfg(unix)]
     group: i32,
 }
@@ -50,7 +50,7 @@ pub fn spawn(command: &[String], log: File) -> io::Result<Server> {
         if let Some(handle) = child.raw_handle() {
             job.assign(handle)?;
         }
-        Ok(Server { child, _job: job })
+        Ok(Server { child, job })
     }
     #[cfg(unix)]
     {
@@ -59,6 +59,124 @@ pub fn spawn(command: &[String], log: File) -> io::Result<Server> {
             .and_then(|id| i32::try_from(id).ok())
             .unwrap_or(0);
         Ok(Server { child, group })
+    }
+}
+
+/// What all the processes of a server use together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Usage {
+    pub processes: u64,
+    /// Resident memory on Unix and the working set on Windows, added up. Pages
+    /// that processes share are counted for each of them.
+    pub memory_bytes: u64,
+}
+
+/// Enough to ask for the usage of a server without holding on to it. It is only
+/// meaningful while the server it came from is alive.
+#[derive(Clone, Copy)]
+pub struct Probe {
+    #[cfg(unix)]
+    group: i32,
+    #[cfg(windows)]
+    job: usize,
+}
+
+impl Server {
+    pub fn probe(&self) -> Probe {
+        Probe {
+            #[cfg(unix)]
+            group: self.group,
+            #[cfg(windows)]
+            job: self.job.0 as usize,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Probe {
+    /// The processes of the group, from `ps`, which Linux and macOS both have.
+    pub fn usage(self) -> Option<Usage> {
+        let output = std::process::Command::new("ps")
+            .args(["-axo", "pgid=,rss="])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let (mut processes, mut kibibytes) = (0, 0_u64);
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let mut fields = line.split_whitespace();
+            let (Some(group), Some(rss)) = (fields.next(), fields.next()) else {
+                continue;
+            };
+            if group.parse::<i32>().ok() == Some(self.group) {
+                processes += 1;
+                kibibytes += rss.parse::<u64>().unwrap_or(0);
+            }
+        }
+        (processes > 0).then_some(Usage {
+            processes,
+            memory_bytes: kibibytes * 1024,
+        })
+    }
+}
+
+#[cfg(windows)]
+impl Probe {
+    /// The processes of the job object, and the working set of each.
+    pub fn usage(self) -> Option<Usage> {
+        use windows_sys::Win32::{
+            Foundation::CloseHandle,
+            System::{
+                JobObjects::{
+                    JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList,
+                    QueryInformationJobObject,
+                },
+                ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+                Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+            },
+        };
+        const CAPACITY: usize = 1024;
+        // Two `u32`, then the list: eight bytes of header and one word per id.
+        let mut buffer = vec![0_usize; 1 + CAPACITY];
+        let size = u32::try_from(buffer.len() * std::mem::size_of::<usize>()).ok()?;
+        // SAFETY: the buffer is aligned for the structure and large enough for
+        // `CAPACITY` ids, the job handle is open while the server lives, and the
+        // slice is cut to the number of ids the call says it wrote.
+        unsafe {
+            let queried = QueryInformationJobObject(
+                self.job as _,
+                JobObjectBasicProcessIdList,
+                buffer.as_mut_ptr().cast(),
+                size,
+                std::ptr::null_mut(),
+            );
+            if queried == 0 {
+                return None;
+            }
+            let list = &*buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+            let count = (list.NumberOfProcessIdsInList as usize).min(CAPACITY);
+            let ids = std::slice::from_raw_parts(list.ProcessIdList.as_ptr(), count);
+            let mut memory_bytes = 0_u64;
+            for id in ids {
+                let Ok(id) = u32::try_from(*id) else { continue };
+                let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, id);
+                if process.is_null() {
+                    continue;
+                }
+                let mut counters: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+                counters.cb = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>())
+                    .expect("a small structure");
+                if GetProcessMemoryInfo(process, &raw mut counters, counters.cb) != 0 {
+                    memory_bytes += counters.WorkingSetSize as u64;
+                }
+                CloseHandle(process);
+            }
+            (count > 0).then_some(Usage {
+                processes: count as u64,
+                memory_bytes,
+            })
+        }
     }
 }
 
