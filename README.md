@@ -20,6 +20,17 @@ the reference server (see [How it is tested](#how-it-is-tested)), and it has had
 little use. Read [What to share](#what-to-share) before you put every server
 behind it.
 
+## Install
+
+Download the binary for Linux, macOS or Windows from the
+[releases](https://github.com/zbl1998-sdjn/mcphive/releases/latest) (each has a
+`.sha256` file) and put it on your `PATH`, or:
+
+```sh
+cargo install mcphive
+cargo binstall mcphive      # the same binary, without building it
+```
+
 ## Use
 
 Put `mcphive run --` in front of the command of a server.
