@@ -132,12 +132,11 @@ mod platform {
 }
 
 #[cfg(unix)]
+#[allow(unsafe_code, reason = "flock is a system call")]
 mod platform {
-    use std::os::unix::fs::PermissionsExt;
+    use std::{fs::File, os::fd::AsRawFd, os::unix::fs::PermissionsExt, path::PathBuf};
 
     use tokio::net::{UnixListener, UnixStream};
-
-    use std::path::PathBuf;
 
     use super::{Conn, Endpoint, io, user_name};
 
@@ -153,9 +152,27 @@ mod platform {
         directory().join(format!("{key}.sock"))
     }
 
+    /// Take the lock of a key without waiting. Whoever holds it is the daemon of
+    /// that key, and it is let go when the process ends, however it ends.
+    fn try_lock(file: &File) -> io::Result<bool> {
+        // SAFETY: flock takes a file descriptor that is open for as long as `file` is.
+        let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if locked == 0 {
+            return Ok(true);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::WouldBlock {
+            Ok(false)
+        } else {
+            Err(error)
+        }
+    }
+
     pub struct Listener {
-        listener: UnixListener,
+        socket: UnixListener,
         path: PathBuf,
+        /// Held for as long as the daemon lives.
+        _lock: File,
     }
 
     impl Listener {
@@ -163,20 +180,34 @@ mod platform {
             let dir = directory();
             std::fs::create_dir_all(&dir)?;
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-            let path = socket_path(&endpoint.key);
-            // A socket file with nobody behind it is left over from a crash.
-            if path.exists() {
-                if std::os::unix::net::UnixStream::connect(&path).is_ok() {
-                    return Err(io::Error::from(io::ErrorKind::AlreadyExists));
-                }
-                std::fs::remove_file(&path)?;
+            // Two daemons that start together must not both bind: the one that
+            // gets the lock does, and the other finds it taken.
+            let lock = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(dir.join(format!("{}.lock", endpoint.key)))?;
+            if !try_lock(&lock)? {
+                return Err(io::Error::from(io::ErrorKind::AlreadyExists));
             }
-            let listener = UnixListener::bind(&path)?;
-            Ok(Self { listener, path })
+            // A socket file that is still there is left from a daemon that
+            // crashed: nobody else holds the lock, so nobody listens on it.
+            let path = socket_path(&endpoint.key);
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            let socket = UnixListener::bind(&path)?;
+            Ok(Self {
+                socket,
+                path,
+                _lock: lock,
+            })
         }
 
         pub async fn accept(&mut self) -> io::Result<Conn> {
-            let (stream, _) = self.listener.accept().await?;
+            let (stream, _) = self.socket.accept().await?;
             Ok(Box::new(stream))
         }
     }
@@ -193,17 +224,19 @@ mod platform {
         ))
     }
 
+    /// The keys of the daemons that answer: a socket file that nobody listens on
+    /// is left from a crash, and is left out.
     pub fn list() -> Vec<String> {
         let mut keys: Vec<String> = std::fs::read_dir(directory())
             .into_iter()
             .flatten()
             .flatten()
             .filter_map(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .strip_suffix(".sock")
-                    .map(str::to_owned)
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let key = name.strip_suffix(".sock")?.to_owned();
+                std::os::unix::net::UnixStream::connect(entry.path())
+                    .ok()
+                    .map(|_| key)
             })
             .collect();
         keys.sort();

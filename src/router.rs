@@ -405,6 +405,16 @@ impl Router {
 mod tests {
     use super::*;
 
+    /// `assert!(actions.is_empty())` says nothing when it fails.
+    #[track_caller]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "reads better at the call sites"
+    )]
+    fn nothing(actions: Vec<Action>) {
+        assert_eq!(actions, Vec::<Action>::new());
+    }
+
     #[allow(
         clippy::needless_pass_by_value,
         reason = "reads better at the call sites"
@@ -459,7 +469,7 @@ mod tests {
             2,
             request(json!(7), "initialize", json!({})),
         ));
-        assert!(second.is_empty(), "it waits for the same answer");
+        nothing(second);
         let Action::ToServer(sent) = &first[0] else {
             panic!()
         };
@@ -626,7 +636,7 @@ mod tests {
             json!({"jsonrpc": "2.0", "id": mb["id"], "result": {}}),
         ));
         let late = router.handle(Event::FromServer(json!({"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progressToken": tb, "progress": 9}})));
-        assert!(late.is_empty());
+        nothing(late);
     }
 
     #[test]
@@ -653,7 +663,7 @@ mod tests {
             )
         };
         // Client 2 has no request 5, so its cancel is dropped.
-        assert!(router.handle(cancel(2, json!(5))).is_empty());
+        nothing(router.handle(cancel(2, json!(5))));
         let out = router.handle(cancel(1, json!(5)));
         assert_eq!(
             out,
@@ -681,13 +691,9 @@ mod tests {
             matches!(&out[0], Action::ToServer(m) if m["method"] == "notifications/cancelled" && m["params"]["requestId"] == up)
         );
         // The late answer is dropped.
-        assert!(
-            router
-                .handle(Event::FromServer(
-                    json!({"jsonrpc": "2.0", "id": up, "result": {}})
-                ))
-                .is_empty()
-        );
+        nothing(router.handle(Event::FromServer(
+            json!({"jsonrpc": "2.0", "id": up, "result": {}}),
+        )));
         assert_eq!(router.clients(), 1);
     }
 
@@ -704,14 +710,10 @@ mod tests {
         };
         assert_ne!(asked["id"], json!("srv-1"));
         // The wrong client cannot answer for it.
-        assert!(
-            router
-                .handle(Event::FromClient(
-                    1,
-                    json!({"jsonrpc": "2.0", "id": asked["id"], "result": {}})
-                ))
-                .is_empty()
-        );
+        nothing(router.handle(Event::FromClient(
+            1,
+            json!({"jsonrpc": "2.0", "id": asked["id"], "result": {}}),
+        )));
         let back = router.handle(Event::FromClient(
             2,
             json!({"jsonrpc": "2.0", "id": asked["id"], "result": {"role": "assistant"}}),
@@ -778,7 +780,7 @@ mod tests {
             2,
             json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
         ));
-        assert!(out.is_empty());
+        nothing(out);
     }
 
     #[test]
