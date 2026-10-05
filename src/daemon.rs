@@ -193,6 +193,7 @@ pub async fn serve(options: Options) -> io::Result<()> {
     )?;
     let mut server = child::spawn(&options.command, log.try_clone()?)?;
     let server_pid = server.child.id();
+    let _ = writeln!(log, "server process {server_pid:?}");
     let mut to_server = server
         .child
         .stdin
@@ -272,14 +273,23 @@ pub async fn serve(options: Options) -> io::Result<()> {
                         Some(deadline) => tokio::time::sleep_until(deadline).await,
                         None => std::future::pending().await,
                     }
-                } => break 'serving,
+                } => {
+                    let _ = writeln!(log, "--- no client for {} s: stopping", options.idle.as_secs());
+                    break 'serving;
+                }
                 status = &mut exit => {
                     let _ = writeln!(log, "--- the server exited: {status:?}");
                     break 'serving;
                 }
-                _ = tokio::signal::ctrl_c() => break 'serving,
+                _ = tokio::signal::ctrl_c() => {
+                    let _ = writeln!(log, "--- interrupted");
+                    break 'serving;
+                }
             };
-            let Some(message) = message else { break };
+            let Some(message) = message else {
+                let _ = writeln!(log, "--- the message channel closed");
+                break;
+            };
             let mut queue = VecDeque::new();
             match message {
                 Msg::Hello { id, tx, accepted } => {
@@ -301,7 +311,10 @@ pub async fn serve(options: Options) -> io::Result<()> {
                         "uptime_secs": started.elapsed().as_secs(),
                     }));
                 }
-                Msg::Stop => break 'serving,
+                Msg::Stop => {
+                    let _ = writeln!(log, "--- asked to stop");
+                    break 'serving;
+                }
                 Msg::ServerGone => {
                     let _ = writeln!(log, "--- the server closed its output");
                     break 'serving;
@@ -319,6 +332,7 @@ pub async fn serve(options: Options) -> io::Result<()> {
                     match action {
                         Action::ToServer(message) => {
                             if server_tx.try_send(line_of(&message)).is_err() {
+                                let _ = writeln!(log, "--- cannot write to the server");
                                 break 'serving;
                             }
                         }
