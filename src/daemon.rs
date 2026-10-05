@@ -41,6 +41,8 @@ enum Msg {
     Status(oneshot::Sender<Value>),
     Stop,
     ServerGone,
+    /// Something for the log.
+    Note(String),
 }
 
 /// The folder of the logs.
@@ -131,16 +133,28 @@ async fn connection(conn: Conn, id: ClientId, main: mpsc::Sender<Msg>) {
         let _ = main.send(Msg::Event(Event::ClientDown(id))).await;
         return;
     }
+    let writer_main = main.clone();
     let writer = tokio::spawn(async move {
         while let Some(line) = outgoing.recv().await {
-            if write.write_all(line.as_bytes()).await.is_err() || write.flush().await.is_err() {
+            let written = write.write_all(line.as_bytes()).await;
+            if let Err(error) = written.and(write.flush().await) {
+                let _ = writer_main
+                    .send(Msg::Note(format!("client {id}: cannot write: {error}")))
+                    .await;
                 break;
             }
         }
     });
     loop {
-        let Ok(Some(line)) = lines.next_line().await else {
-            break;
+        let line = match lines.next_line().await {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) => {
+                let _ = main
+                    .send(Msg::Note(format!("client {id}: cannot read: {error}")))
+                    .await;
+                break;
+            }
         };
         if line.trim().is_empty() {
             continue;
@@ -314,6 +328,9 @@ pub async fn serve(options: Options) -> io::Result<()> {
                 Msg::Stop => {
                     let _ = writeln!(log, "--- asked to stop");
                     break 'serving;
+                }
+                Msg::Note(note) => {
+                    let _ = writeln!(log, "{note}");
                 }
                 Msg::ServerGone => {
                     let _ = writeln!(log, "--- the server closed its output");

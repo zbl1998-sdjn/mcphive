@@ -5,7 +5,7 @@
 use std::{io, process::Stdio, time::Duration};
 
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, Stdout, WriteHalf},
     time::Instant,
 };
 
@@ -152,15 +152,30 @@ pub async fn run(options: Options) -> io::Result<i32> {
         let _ = tokio::io::copy(&mut stdin, &mut to_daemon).await;
         let _ = to_daemon.shutdown().await;
     };
-    let down = async {
-        let _ = tokio::io::copy(&mut from_daemon, &mut stdout).await;
-        let _ = stdout.flush().await;
-    };
+    let down = pass_down(&mut from_daemon, &mut stdout);
     Ok(tokio::select! {
         () = up => 0,
-        () = down => {
-            eprintln!("mcphive: the shared server went away");
+        why = down => {
+            eprintln!("mcphive: the shared server went away: {why}");
             1
         }
     })
+}
+
+/// Pass what the daemon says on to standard output until something ends, and
+/// say what it was.
+async fn pass_down(from_daemon: &mut BufReader<ReadHalf<Conn>>, stdout: &mut Stdout) -> String {
+    let mut buffer = vec![0; 8192];
+    loop {
+        match from_daemon.read(&mut buffer).await {
+            Ok(0) => return "the daemon closed the connection".to_owned(),
+            Ok(read) => {
+                let written = stdout.write_all(&buffer[..read]).await;
+                if let Err(error) = written.and(stdout.flush().await) {
+                    return format!("cannot write to standard output: {error}");
+                }
+            }
+            Err(error) => return format!("the connection broke: {error}"),
+        }
+    }
 }

@@ -145,7 +145,13 @@ mod platform {
             || std::env::temp_dir().join(format!("mcphive-{}", user_name())),
             PathBuf::from,
         );
-        base.join("mcphive")
+        // XDG_RUNTIME_DIR is the same for every namespace, so a namespace has to
+        // be told apart by the name of the folder as well.
+        if std::env::var_os("MCPHIVE_NAMESPACE").is_some() {
+            base.join(format!("mcphive-{}", user_name()))
+        } else {
+            base.join("mcphive")
+        }
     }
 
     fn socket_path(key: &str) -> PathBuf {
